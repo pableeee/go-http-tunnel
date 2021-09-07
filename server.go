@@ -254,6 +254,8 @@ func (s *Server) handleClient(conn net.Conn) {
 		inConnPool bool
 		b          []byte
 		m          map[string]string
+		found      bool
+		t          *proto.Tunnel
 	)
 
 	tlsConn, ok := conn.(*tls.Conn)
@@ -386,9 +388,15 @@ func (s *Server) handleClient(conn net.Conn) {
 		"action", "connected",
 	)
 
+	t, found = tunnels["webui"]
+	if !found {
+		return
+	}
+
 	m = map[string]string{
 		"event": "subscribe",
 		"id":    identifier.String(),
+		"host":  t.Host,
 	}
 
 	b, err = json.Marshal(m)
