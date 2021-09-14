@@ -53,7 +53,7 @@ type ServerConfig struct {
 // Server is responsible for proxying public connections to the client over a
 // tunnel connection.
 type Server struct {
-	*registry
+	Registry
 	config *ServerConfig
 
 	listener   net.Listener
@@ -61,7 +61,15 @@ type Server struct {
 	httpClient *http.Client
 	logger     log.Logger
 	vhostMuxer *vhost.TLSMuxer
-	publisher  queue.Publisher
+}
+
+type Registry interface {
+	Clear(identifier id.ID) *RegistryItem
+	Unsubscribe(identifier id.ID) *RegistryItem
+	Subscribe(identifier id.ID)
+	IsSubscribed(identifier id.ID) bool
+	Set(i *RegistryItem, identifier id.ID) error
+	Subscriber(hostPort string) (id.ID, *Auth, bool)
 }
 
 // NewServer creates a new Server.
@@ -80,13 +88,16 @@ func NewServer(config *ServerConfig) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to create nats publisher %w", err)
 	}
+	var reg Registry
+	reg = newRegistry(logger)
+	// Decorates registry to notify (dis)connection events
+	reg = newNotificationMiddleware(reg, p, config.PublishTopic, logger)
 
 	s := &Server{
-		registry:  newRegistry(logger),
-		config:    config,
-		listener:  listener,
-		logger:    logger,
-		publisher: p,
+		Registry: reg,
+		config:   config,
+		listener: listener,
+		logger:   logger,
 	}
 
 	t := &http2.Transport{}
@@ -175,7 +186,7 @@ func (s *Server) disconnected(identifier id.ID) {
 		"identifier", identifier,
 	)
 
-	i := s.registry.clear(identifier)
+	i := s.Clear(identifier)
 	if i == nil {
 		return
 	}
@@ -252,10 +263,6 @@ func (s *Server) handleClient(conn net.Conn) {
 		ok         bool
 
 		inConnPool bool
-		b          []byte
-		m          map[string]string
-		found      bool
-		t          *proto.Tunnel
 	)
 
 	tlsConn, ok := conn.(*tls.Conn)
@@ -388,45 +395,6 @@ func (s *Server) handleClient(conn net.Conn) {
 		"action", "connected",
 	)
 
-	t, found = tunnels["webui"]
-	if !found {
-		return
-	}
-
-	m = map[string]string{
-		"event": "subscribe",
-		"id":    identifier.String(),
-		"host":  t.Host,
-	}
-
-	b, err = json.Marshal(m)
-	if err != nil {
-
-		logger.Log(
-			"level", 2,
-			"msg", fmt.Sprintf("unable to marshal prometheus update message: %s", err.Error()),
-			"err", err,
-		)
-
-		goto reject
-	}
-
-	if err = s.publisher.Publish(s.config.PublishTopic, b); err != nil {
-		logger.Log(
-			"level", 2,
-			"msg", fmt.Sprintf("unable to pusblish prometheus update message: %s", err.Error()),
-			"err", err,
-		)
-
-		goto reject
-	}
-
-	logger.Log(
-		"level", 1,
-		"msg", fmt.Sprintf("prometheus update message pusblished: %s", string(b)),
-		"err", err,
-	)
-
 	return
 
 reject:
@@ -521,7 +489,7 @@ func (s *Server) addTunnels(tunnels map[string]*proto.Tunnel, identifier id.ID) 
 		}
 	}
 
-	err = s.set(i, identifier)
+	err = s.Set(i, identifier)
 	if err != nil {
 		goto rollback
 	}
@@ -544,7 +512,7 @@ rollback:
 // connected and returns it's RegistryItem.
 func (s *Server) Unsubscribe(identifier id.ID) *RegistryItem {
 	s.connPool.DeleteConn(identifier)
-	return s.registry.Unsubscribe(identifier)
+	return s.Unsubscribe(identifier)
 }
 
 // Ping measures the RTT response time.
