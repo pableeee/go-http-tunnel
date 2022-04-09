@@ -118,7 +118,7 @@ func (r *registry) Unsubscribe(identifier id.ID) *RegistryItem {
 	return i
 }
 
-func (r *registry) set(i *RegistryItem, identifier id.ID) error {
+func (r *registry) Set(i *RegistryItem, identifier id.ID) error {
 	r.logger.Log(
 		"level", 2,
 		"action", "set registry item",
@@ -159,7 +159,7 @@ func (r *registry) set(i *RegistryItem, identifier id.ID) error {
 	return nil
 }
 
-func (r *registry) clear(identifier id.ID) *RegistryItem {
+func (r *registry) Clear(identifier id.ID) *RegistryItem {
 	r.logger.Log(
 		"level", 2,
 		"action", "clear registry item",

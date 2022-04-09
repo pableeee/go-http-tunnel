@@ -22,6 +22,7 @@ import (
 	"github.com/mmatczuk/go-http-tunnel/id"
 	"github.com/mmatczuk/go-http-tunnel/log"
 	"github.com/mmatczuk/go-http-tunnel/proto"
+	"github.com/pableeee/processor/pkg/queue"
 )
 
 // ServerConfig defines configuration for the Server.
@@ -41,12 +42,18 @@ type ServerConfig struct {
 	Logger log.Logger
 	// Addr is TCP address to listen for TLS SNI connections
 	SNIAddr string
+
+	PublisherAddr string
+
+	PublisherPort int
+
+	PublishTopic string
 }
 
 // Server is responsible for proxying public connections to the client over a
 // tunnel connection.
 type Server struct {
-	*registry
+	Registry
 	config *ServerConfig
 
 	listener   net.Listener
@@ -54,6 +61,15 @@ type Server struct {
 	httpClient *http.Client
 	logger     log.Logger
 	vhostMuxer *vhost.TLSMuxer
+}
+
+type Registry interface {
+	Clear(identifier id.ID) *RegistryItem
+	Unsubscribe(identifier id.ID) *RegistryItem
+	Subscribe(identifier id.ID)
+	IsSubscribed(identifier id.ID) bool
+	Set(i *RegistryItem, identifier id.ID) error
+	Subscriber(hostPort string) (id.ID, *Auth, bool)
 }
 
 // NewServer creates a new Server.
@@ -68,8 +84,17 @@ func NewServer(config *ServerConfig) (*Server, error) {
 		logger = log.NewNopLogger()
 	}
 
+	p, err := queue.NewNatsPublisher(config.PublisherAddr, config.PublisherPort)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create nats publisher %w", err)
+	}
+	var reg Registry
+	reg = newRegistry(logger)
+	// Decorates registry to notify (dis)connection events
+	reg = newNotificationMiddleware(reg, p, config.PublishTopic, logger)
+
 	s := &Server{
-		registry: newRegistry(logger),
+		Registry: reg,
 		config:   config,
 		listener: listener,
 		logger:   logger,
@@ -161,7 +186,7 @@ func (s *Server) disconnected(identifier id.ID) {
 		"identifier", identifier,
 	)
 
-	i := s.registry.clear(identifier)
+	i := s.Clear(identifier)
 	if i == nil {
 		return
 	}
@@ -464,7 +489,7 @@ func (s *Server) addTunnels(tunnels map[string]*proto.Tunnel, identifier id.ID) 
 		}
 	}
 
-	err = s.set(i, identifier)
+	err = s.Set(i, identifier)
 	if err != nil {
 		goto rollback
 	}
@@ -487,7 +512,7 @@ rollback:
 // connected and returns it's RegistryItem.
 func (s *Server) Unsubscribe(identifier id.ID) *RegistryItem {
 	s.connPool.DeleteConn(identifier)
-	return s.registry.Unsubscribe(identifier)
+	return s.Unsubscribe(identifier)
 }
 
 // Ping measures the RTT response time.
